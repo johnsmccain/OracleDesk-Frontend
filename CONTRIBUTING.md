@@ -109,6 +109,54 @@ organization in a Wave; check the Drips docs for the current numbers.
 Issue drafts live in [docs/wave-issues/](docs/wave-issues/) before they're
 filed.
 
+## Status announcements
+
+Every flow that moves money or signs something must tell a screen reader
+what is happening. The app has one announcer, mounted in `app/layout.tsx`:
+
+```tsx
+import { useAnnounce, useFocusReturn } from "@/components/ui/announcer";
+import { txMessages } from "@/lib/a11y/tx-messages";
+
+const announce = useAnnounce();
+const focusReturn = useFocusReturn();
+
+announce(txMessages.awaitingSignature("Buy YES shares"), {
+  dedupeKey: `buy:${marketId}:awaiting`,
+});
+```
+
+The rules:
+
+- **Announce, don't replace.** A visible status line that is swapped out
+  mid-sentence is not announced. Put the message in the live region through
+  `useAnnounce()`; keep the visible text for sighted users.
+- **Use the vocabulary in `lib/a11y/tx-messages.ts`.** The messages are
+  written for someone who cannot see the screen. Do not invent new copy per
+  page.
+- **Never announce a URL or a hash.** A screen reader would read out
+  "h t t p s colon slash slash" and 64 hex characters. Put the transaction in
+  a `<TxLink hash={...} />` (`components/ui/tx-link.tsx`), which is labelled
+  and says that it opens a new tab.
+- **Give the focus back.** A wallet extension opens its own window and drops
+  the focus when it closes. Call `focusReturn.capture()` before the wallet
+  opens (the `onPhase` callback of the write hook does this for you) and
+  `focusReturn.restore()` when the transaction settles.
+- **Do not close a message before it was read.** The premium checkout used to
+  close itself four seconds after a successful payment, which cut the
+  announcement off. Use an explicit "Done" button instead.
+- **Do not open a new tab on the user's behalf.** The copy-trade flow used to
+  call `window.open` after a successful trade, which moved the focus without
+  warning.
+
+The write hooks accept an `onPhase` callback that reports every phase of the
+transaction, so a flow can announce "waiting for your wallet", "sent to the
+network" and "confirmed" without touching the hooks themselves:
+
+```tsx
+await buy.mutateAsync({ marketId, outcome, collateralIn, slippageBps, onPhase });
+```
+
 ## What a good PR includes
 
 - A short description and the issue it closes.

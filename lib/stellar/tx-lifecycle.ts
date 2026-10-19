@@ -50,6 +50,8 @@ export class TxLifecycle<T> {
   private readonly pollIntervalMs: number;
   private readonly maxPollMs: number;
   private readonly onHash?: (hash: string) => void;
+  /** Called on every phase change of the run in flight. */
+  private phaseListener: ((phase: TxPhase) => void) | null = null;
 
   constructor(opts: {
     /** A server, or a getter so each run uses the pool's (pinned) endpoint. */
@@ -80,6 +82,11 @@ export class TxLifecycle<T> {
 
   private setPhase(newPhase: TxPhase) {
     this.phase = newPhase;
+    try {
+      this.phaseListener?.(newPhase);
+    } catch {
+      // A listener must never break the transaction.
+    }
     for (const listener of this.listeners) {
       try {
         listener();
@@ -98,6 +105,20 @@ export class TxLifecycle<T> {
   }
 
   async run(
+    tx: AssembledTransaction<T>,
+    parse: (v: xdr.ScVal | undefined) => T,
+    onHash?: (hash: string) => void,
+    onPhase?: (phase: TxPhase) => void,
+  ): Promise<{ value: T; txHash: string; ledger: number }> {
+    this.phaseListener = onPhase ?? null;
+    try {
+      return await this.runTransaction(tx, parse, onHash);
+    } finally {
+      this.phaseListener = null;
+    }
+  }
+
+  private async runTransaction(
     tx: AssembledTransaction<T>,
     parse: (v: xdr.ScVal | undefined) => T,
     onHash?: (hash: string) => void,

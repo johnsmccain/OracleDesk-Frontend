@@ -25,6 +25,7 @@ import {
 } from "@/lib/stellar/fees";
 import {
   TxLifecycle,
+  type TxPhase,
 } from "@/lib/stellar/tx-lifecycle";
 import { useTxTracker } from "@/lib/stellar/tx-tracker";
 import { tradeInvalidationKeys } from "@/lib/stellar/tx-tracker-core";
@@ -747,8 +748,8 @@ function confirmedAmount(value: xdr.ScVal | undefined): bigint {
 function useTxRunner(contract: ContractName) {
   const [runner] = useState(() => new TxLifecycle<unknown>({ server: () => rpcServer(), contract }));
   const phase = useSyncExternalStore(runner.subscribe, runner.getSnapshot, runner.getSnapshot);
-  const start = useCallback(<T, R = T>(tx: AssembledTransaction<T>, parse: (v: xdr.ScVal | undefined) => R, onHash?: (hash: string) => void) => {
-    const run = runner.run(tx as AssembledTransaction<unknown>, parse, onHash) as Promise<{ value: R; txHash: string; ledger: number }>;
+  const start = useCallback(<T, R = T>(tx: AssembledTransaction<T>, parse: (v: xdr.ScVal | undefined) => R, onHash?: (hash: string) => void, onPhase?: (phase: TxPhase) => void) => {
+    const run = runner.run(tx as AssembledTransaction<unknown>, parse, onHash, onPhase) as Promise<{ value: R; txHash: string; ledger: number }>;
     if (!DEBUG_ENABLED) return run;
     const method = `submit:${String((tx as { options?: { method?: string } }).options?.method ?? "tx")}`;
     return run.then(
@@ -772,6 +773,12 @@ export interface BuyParams {
   slippageBps: number;
   confirmBoundsChanged?: (previous: bigint, next: bigint) => Promise<boolean>;
   review?: PreparedWriteReview;
+  /**
+   * Called on every phase of the transaction, so a screen reader can be told
+   * that the wallet is waiting, that the transaction was sent and that it
+   * failed. Additive: existing callers compile unchanged.
+   */
+  onPhase?: (phase: TxPhase) => void;
 }
 
 export interface PreparedWrite {
@@ -1080,7 +1087,7 @@ export function useBuy() {
         const minSharesOut = BigInt(prepared.intent.min_shares_out);
         const onHash = (hash: string) => tracker.track({ hash, kind: "buy", holder: signer.publicKey, marketId: String(marketId), outcome,
           amounts: { collateralIn: collateralIn.toString(), minSharesOut: minSharesOut.toString() }, networkPassphrase: NETWORK_PASSPHRASE });
-        const { value, txHash, ledger } = await runner.start(prepared.tx, confirmedAmount, onHash);
+        const { value, txHash, ledger } = await runner.start(prepared.tx, confirmedAmount, onHash, params.onPhase);
         return { sharesOut: value, quotedShares: quote, minSharesOut, txHash, ledger, collateralIn, holder: signer.publicKey };
       });
     },
@@ -1541,6 +1548,12 @@ export interface UsdcTransferParams {
   to: string;
   amount: bigint;
   review?: PreparedWriteReview;
+  /**
+   * Called on every phase of the transaction, so a screen reader can be told
+   * that the wallet is waiting, that the transaction was sent and that it
+   * failed. Additive: existing callers compile unchanged.
+   */
+  onPhase?: (phase: TxPhase) => void;
 }
 
 export function useUsdcTransfer() {
@@ -1550,7 +1563,7 @@ export function useUsdcTransfer() {
   const tracker = useTxTracker();
 
   const mutation = useMutation({
-    mutationFn: ({ to, amount, followUp, review }: UsdcTransferParams) => withPinnedRpc(async () => {
+    mutationFn: ({ to, amount, followUp, review, onPhase }: UsdcTransferParams) => withPinnedRpc(async () => {
       const signer = guard();
       if (amount <= 0n) throw new UserFacingError({ kind: "contract", message: "Enter an amount greater than zero." });
 
@@ -1572,7 +1585,7 @@ export function useUsdcTransfer() {
 
       const parse = () => null;
 
-      const { txHash } = await runner.start(tx, parse, onHash);
+      const { txHash } = await runner.start(tx, parse, onHash, onPhase);
       if (!txHash) throw new UserFacingError({ kind: "unknown", message: "The payment was sent but no transaction hash came back." });
       return { txHash, holder: signer.publicKey };
     }),

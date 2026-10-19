@@ -92,6 +92,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const { createFakeKit, WalletHarness, CommitCounter, FAKE_ADDRESS } = await import("./wallet-harness");
+const { AnnouncerProvider } = await import("@/components/ui/announcer");
 const { BuyTicket } = await import("@/components/market/buy-ticket");
 const { useWalletActions, useWalletSession } = await import("@/lib/contexts/WalletContext");
 
@@ -137,18 +138,20 @@ describe("quick-view render isolation", () => {
     const onSessionValue = () => {};
 
     render(
-      <WalletHarness kit={kit}>
-        <CommitCounter id="header" onCommit={onHeader}>
-          <Header />
-        </CommitCounter>
-        <CommitCounter id="ticket" onCommit={onTicket}>
-          <BuyTicket onChainMarketId="1" side="Yes" />
-        </CommitCounter>
-        <CommitCounter id="session" onCommit={onSession}>
-          <SessionProbe onChange={onSessionValue} />
-        </CommitCounter>
-        <ActionsProbe onChange={onSessionValue} />
-      </WalletHarness>,
+      <AnnouncerProvider>
+        <WalletHarness kit={kit}>
+          <CommitCounter id="header" onCommit={onHeader}>
+            <Header />
+          </CommitCounter>
+          <CommitCounter id="ticket" onCommit={onTicket}>
+            <BuyTicket onChainMarketId="1" side="Yes" />
+          </CommitCounter>
+          <CommitCounter id="session" onCommit={onSession}>
+            <SessionProbe onChange={onSessionValue} />
+          </CommitCounter>
+          <ActionsProbe onChange={onSessionValue} />
+        </WalletHarness>
+      </AnnouncerProvider>,
     );
 
     const input = screen.getByRole("textbox", { name: /Amount \(USDC\)/i }) as HTMLInputElement;
@@ -188,15 +191,17 @@ describe("quick-view render isolation", () => {
     };
 
     render(
-      <WalletHarness kit={kit}>
-        <CommitCounter id="ticket" onCommit={onTicket}>
-          <BuyTicket onChainMarketId="1" side="Yes" />
-        </CommitCounter>
-        <CommitCounter id="session" onCommit={onSession}>
-          <SessionProbe onChange={onSessionValue} />
-        </CommitCounter>
-        <ActionsProbe onChange={onActionsValue} />
-      </WalletHarness>,
+      <AnnouncerProvider>
+        <WalletHarness kit={kit}>
+          <CommitCounter id="ticket" onCommit={onTicket}>
+            <BuyTicket onChainMarketId="1" side="Yes" />
+          </CommitCounter>
+          <CommitCounter id="session" onCommit={onSession}>
+            <SessionProbe onChange={onSessionValue} />
+          </CommitCounter>
+          <ActionsProbe onChange={onActionsValue} />
+        </WalletHarness>
+      </AnnouncerProvider>,
     );
 
     await waitFor(() => expect(ticketCommits).toBeGreaterThan(0));

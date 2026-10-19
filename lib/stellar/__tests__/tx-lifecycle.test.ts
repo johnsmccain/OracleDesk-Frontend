@@ -272,4 +272,52 @@ describe("TxLifecycle", () => {
     expect(notifications.length).toBe(0);
     expect(runner.getSnapshot().name).toBe("confirmed");
   });
+
+  it("reports every phase to the onPhase callback, in order", async () => {
+    const phases: TxPhase[] = [];
+    const fakeServer = {
+      sendTransaction: vi.fn().mockResolvedValue({ status: "PENDING" }),
+      getTransaction: vi.fn().mockResolvedValue({
+        status: "SUCCESS",
+        ledger: 5,
+        returnValue: undefined,
+      }),
+    };
+
+    const runner = new TxLifecycle({
+      server: fakeServer as unknown as rpc.Server,
+      contract: "marketCore",
+      pollIntervalMs: 1,
+    });
+
+    await runner.run(makeFakeTx({}), () => 1n, undefined, (phase) => phases.push(phase));
+
+    // The wallet prompt, the submission and the confirmation, in that order.
+    expect(phases.map((p) => p.name)).toEqual([
+      "simulating",
+      "awaiting-signature",
+      "submitting",
+      "pending",
+      "confirmed",
+    ]);
+  });
+
+  it("never reports a submission when the wallet rejects", async () => {
+    const phases: TxPhase[] = [];
+    const fakeServer = { sendTransaction: vi.fn() };
+
+    const runner = new TxLifecycle({
+      server: fakeServer as unknown as rpc.Server,
+      contract: "marketCore",
+    });
+
+    await expect(
+      runner.run(makeFakeTx({ signError: new Error("User declined transaction") }), () => null, undefined, (phase) =>
+        phases.push(phase),
+      ),
+    ).rejects.toThrow();
+
+    expect(phases.map((p) => p.name)).toEqual(["simulating", "awaiting-signature", "failed"]);
+    expect(fakeServer.sendTransaction).not.toHaveBeenCalled();
+  });
 });

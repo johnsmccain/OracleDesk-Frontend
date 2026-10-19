@@ -10,12 +10,15 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useWallet } from "@/lib/contexts/WalletContext";
 import { useUsdcTransfer, useAccountReserve, usePrepareUsdcTransfer, useAccountAuth, usePrepareMultisig } from "@/lib/hooks/useStellar";
-import { PAYMENTS_RECIPIENT, NETWORK_PASSPHRASE, explorerTx } from "@/lib/stellar/config";
+import { PAYMENTS_RECIPIENT, NETWORK_PASSPHRASE } from "@/lib/stellar/config";
 import { formatUsdc, parseUsdc } from "@/lib/stellar/units";
 import { TxPhase } from "@/lib/stellar/tx-lifecycle";
 import { isMultisigAccount, type MultisigSession } from "@/lib/stellar/multisig";
 import { MultisigReview } from "@/components/multisig-review";
 import { PendingPaymentCard } from "@/components/pending-payment-card";
+import { TxLink } from "@/components/ui/tx-link";
+import { useAnnounce, useFocusReturn } from "@/components/ui/announcer";
+import { announcementPoliteness, failureMessage, txMessages } from "@/lib/a11y/tx-messages";
 import { isUnfinishedPayment, listPending, removePending, savePending, type PendingPayment } from "@/lib/payments/pending";
 import { verifyPendingPayment, type VerifyResult } from "@/lib/payments/verify";
 import { DAILY_PASS_TRACE_PLACEHOLDER } from "@/lib/api/traces";
@@ -123,6 +126,12 @@ export default function PremiumPageClient() {
   const [paymentMethod, setPaymentMethod] = useState<"usdc" | "card">("usdc");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusTxHash, setStatusTxHash] = useState<string | null>(null);
+  const [paymentComplete, setPaymentComplete] = useState(false);
+  const payButtonRef = useRef<HTMLButtonElement>(null);
+  const resultRef = useRef<HTMLParagraphElement>(null);
+  const announce = useAnnounce();
+  const focusReturn = useFocusReturn();
   const [reviewModel, setReviewModel] = useState<{ model: ReviewModel; changedFrom?: ReviewModel } | null>(null);
   const reviewResolver = useRef<((approved: boolean) => void) | null>(null);
   const accountAuth = useAccountAuth(address);
@@ -240,11 +249,15 @@ export default function PremiumPageClient() {
     }
 
     setIsSubmitting(true);
+    setPaymentComplete(false);
+    setStatusTxHash(null);
     let txHash: string | null = null;
     try {
       setStatusMessage("One more signature: this logs you in to OracleDesk and doesn't move funds.");
+      announce(txMessages.awaitingSignature("Daily pass payment"), { dedupeKey: "premium:signin" });
       if (!(await ensureSession())) {
         setStatusMessage("You need to sign in with your wallet before paying.");
+        focusReturn.restore(payButtonRef.current);
         return;
       }
 
@@ -258,6 +271,20 @@ export default function PremiumPageClient() {
           type: "unlock-daily-pass",
           traceId: DAILY_PASS_TRACE_PLACEHOLDER,
           amountRaw: selectedTier.priceRaw.toString(),
+        },
+        onPhase: (phase) => {
+          if (phase.name === "awaiting-signature") {
+            focusReturn.capture();
+            announce(txMessages.awaitingSignature("Daily pass payment"), { dedupeKey: "premium:awaiting" });
+          } else if (phase.name === "submitting") {
+            announce(txMessages.submitted("Daily pass payment"), { dedupeKey: "premium:submitted" });
+          } else if (phase.name === "failed") {
+            announce(failureMessage("Daily pass payment", phase.error), {
+              politeness: announcementPoliteness(phase.error.kind),
+              dedupeKey: "premium:failed",
+            });
+            focusReturn.restore(payButtonRef.current);
+          }
         },
       });
       txHash = sent.txHash.toLowerCase();
@@ -277,20 +304,39 @@ export default function PremiumPageClient() {
       refreshPending();
 
       setStatusMessage("Payment sent. Waiting for OracleDesk to verify it on-chain…");
+      setStatusTxHash(txHash);
+      announce(txMessages.backendFollowUp("Daily pass payment"), { dedupeKey: "premium:verifying" });
       const result = await resumePayment(payment, ensureSession);
       if (!saved) {
-        setStatusMessage(`Couldn't save this payment on this device. Keep this transaction: ${explorerTx(txHash)}`);
+        setStatusMessage("Couldn't save this payment on this device. Keep the transaction link below as your receipt.");
+        setStatusTxHash(txHash);
+        announce(txMessages.failed({ kind: "unknown", message: "Couldn't save this payment on this device. Keep the transaction link as your receipt." }), {
+          politeness: "assertive",
+          dedupeKey: "premium:unsaved",
+        });
       } else if (result === "verified") {
-        setStatusMessage(`Your daily pass is active for 24 hours. Transaction: ${explorerTx(txHash)}`);
-        setTimeout(() => setSelectedTier(null), 4000);
+        setStatusMessage("Your daily pass is active for 24 hours.");
+        setStatusTxHash(txHash);
+        setPaymentComplete(true);
+        announce(txMessages.confirmed({ action: "Daily pass payment", amount: selectedTier.priceRaw, unit: "USDC" }), {
+          dedupeKey: "premium:confirmed",
+        });
+        focusReturn.restore(resultRef.current ?? payButtonRef.current);
       } else {
         setStatusMessage("Payment received. Activation is still pending and is listed above; you don't need to pay again.");
+        setStatusTxHash(txHash);
+        announce(txMessages.backendFollowUp("Daily pass payment"), { dedupeKey: "premium:pending" });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Payment failed. Please try again.";
       setStatusMessage(
         txHash === null ? `${message} If funds left your wallet, check its history before paying again.` : message,
       );
+      announce(txMessages.failed({ kind: "unknown", message }), {
+        politeness: "assertive",
+        dedupeKey: "premium:failed",
+      });
+      focusReturn.restore(payButtonRef.current);
     } finally {
       setIsSubmitting(false);
     }
@@ -512,18 +558,34 @@ export default function PremiumPageClient() {
                       <span className="font-label-caps text-label-caps text-on-surface-variant">Status</span>
                       <span className="font-data-mono text-secondary text-sm">{statusMessage ?? "Ready"}</span>
                     </div>
+                    {statusTxHash && (
+                      <p ref={resultRef} tabIndex={-1} className="mb-3 text-xs text-on-surface-variant">
+                        Receipt:{" "}
+                        <TxLink hash={statusTxHash} />
+                      </p>
+                    )}
                     {isWrongNetwork && <p className="text-error text-sm">Wrong network; switch to Stellar Testnet.</p>}
                     {isUnfunded && <p className="text-warning text-sm">This account cannot cover the transaction fee.</p>}
                   </div>
 
                   <div className="flex flex-col gap-3">
-                    <button
-                      onClick={() => void handlePayment()}
-                      disabled={isSubmitting || !selectedTier.priceRaw || !address || isWrongNetwork}
-                      className="w-full bg-primary text-primary-foreground py-3 rounded-lg font-label-caps text-label-caps hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {isSubmitting ? "Processing…" : `Pay ${selectedTier.priceStr}`}
-                    </button>
+                    {paymentComplete ? (
+                      <button
+                        onClick={() => setSelectedTier(null)}
+                        className="w-full bg-primary text-primary-foreground py-3 rounded-lg font-label-caps text-label-caps hover:brightness-110"
+                      >
+                        Done
+                      </button>
+                    ) : (
+                      <button
+                        ref={payButtonRef}
+                        onClick={() => void handlePayment()}
+                        disabled={isSubmitting || !selectedTier.priceRaw || !address || isWrongNetwork}
+                        className="w-full bg-primary text-primary-foreground py-3 rounded-lg font-label-caps text-label-caps hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {isSubmitting ? "Processing…" : `Pay ${selectedTier.priceStr}`}
+                      </button>
+                    )}
                     {isMultisig && (
                       <button
                         onClick={() => void handlePrepareMultisigTransfer()}

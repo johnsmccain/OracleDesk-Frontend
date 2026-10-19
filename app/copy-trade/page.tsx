@@ -14,7 +14,6 @@ import { confirmCopyTrade, initiateCopyTrade } from "@/lib/api/trade";
 import { ApiError } from "@/lib/api/client";
 import { useMarket } from "@/lib/hooks/useMarkets";
 import { useBuy, useQuoteBuy, useUsdcBalance, useAccountReserve, usePrepareBuy, useOnChainMarket, fetchOnChainMarketBySimulation, useUsdcTrustline, useEnableUsdc, useUsdcBalanceState, type PreparedWriteReview } from "@/lib/hooks/useStellar";
-import { explorerTx } from "@/lib/stellar/config";
 import { formatUsdc, formatXlm, minOut, bpsToPercent, probabilityToBps, tryParseUsdc, BPS } from "@/lib/stellar/units";
 import { chooseCollateral, maxCollateralForEdge, quoteCopy, type CopyMarket, type CopyQuote, type SizingMode } from "@/lib/stellar/quote";
 import type { OutcomeTag } from "@/lib/stellar/clients";
@@ -24,6 +23,9 @@ import { TxPhase } from "@/lib/stellar/tx-lifecycle";
 import { getLedgerNow, useLedgerNow } from "@/lib/stellar/ledger-clock";
 import { MIN_TX_TIMEOUT_S, SAFETY_MARGIN_S } from "@/lib/stellar/deadline";
 import { PendingValue } from "@/components/pending-value";
+import { TxLink } from "@/components/ui/tx-link";
+import { useAnnounce, useFocusReturn } from "@/components/ui/announcer";
+import { announcementPoliteness, failureMessage, txMessages } from "@/lib/a11y/tx-messages";
 import { SLIPPAGE_PRESET_BPS } from "@/lib/settings/settings";
 import { useSettings } from "@/lib/settings/useSettings";
 import Link from "next/link";
@@ -136,7 +138,12 @@ function CopyTradeContent() {
   const { settings } = useSettings(address);
   const [slippageOverrideBps, setSlippageOverrideBps] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusTxHash, setStatusTxHash] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const announce = useAnnounce();
+  const focusReturn = useFocusReturn();
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
   const [reviewModel, setReviewModel] = useState<{ model: ReviewModel; changedFrom?: ReviewModel } | null>(null);
   const reviewResolver = useRef<((approved: boolean) => void) | null>(null);
   const sliderRef = useRef<HTMLDivElement>(null);
@@ -300,8 +307,10 @@ function CopyTradeContent() {
     setIsSubmitting(true);
     try {
       setStatusMessage("Signing in to OracleDesk…");
+      announce(txMessages.awaitingSignature("Copy trade"), { dedupeKey: "copy-trade:signin" });
       if (!(await ensureSession())) {
         setStatusMessage("You need to sign in with your wallet to copy trades.");
+        focusReturn.restore(confirmButtonRef.current);
         return;
       }
 
@@ -338,6 +347,7 @@ function CopyTradeContent() {
       }
 
       setStatusMessage("Recording your copy trade…");
+      announce(txMessages.backendFollowUp("Copy trade"), { dedupeKey: "copy-trade:recording" });
       const { copyTradeId } = await initiateCopyTrade({
         traceId: trace.id,
         marketId: market.id,
@@ -352,20 +362,40 @@ function CopyTradeContent() {
         slippageBps,
         prepared: prepareBuy.data,
         review: reviewPreparedBuy,
+        onPhase: (phase) => {
+          if (phase.name === "awaiting-signature") {
+            focusReturn.capture();
+            announce(txMessages.awaitingSignature("Copy trade"), { dedupeKey: "copy-trade:awaiting" });
+          } else if (phase.name === "submitting") {
+            announce(txMessages.submitted("Copy trade"), { dedupeKey: "copy-trade:submitted" });
+          } else if (phase.name === "failed") {
+            announce(failureMessage("Copy trade", phase.error), {
+              politeness: announcementPoliteness(phase.error.kind),
+              dedupeKey: "copy-trade:failed",
+            });
+            focusReturn.restore(confirmButtonRef.current);
+          }
+        },
       });
 
       if (result.txHash) await confirmCopyTrade(copyTradeId, result.txHash).catch(() => undefined);
-      setStatusMessage(
-        `Done. You received ${formatUsdc(result.sharesOut, { maxDecimals: 2 })} ${side.toUpperCase()} shares.` +
-          (result.txHash ? ` Transaction ${result.txHash.slice(0, 10)}…` : ""),
-      );
-      if (result.txHash) window.open(explorerTx(result.txHash), "_blank", "noopener,noreferrer");
+      setStatusMessage(`Done. You received ${formatUsdc(result.sharesOut, { maxDecimals: 2 })} ${side.toUpperCase()} shares.`);
+      setStatusTxHash(result.txHash);
+      announce(txMessages.confirmed({ action: "Copy trade", amount: result.sharesOut, unit: "shares" }), {
+        dedupeKey: "copy-trade:confirmed",
+      });
+      focusReturn.restore(resultRef.current ?? confirmButtonRef.current);
     } catch (error) {
       if (error instanceof ApiError && error.code === "TRACE_LOCKED") {
         setStatusMessage("Unlock this trace before copying it.");
       } else {
         setStatusMessage(error instanceof Error ? error.message : "The trade didn't go through. Please try again.");
       }
+      announce(txMessages.failed({ kind: "unknown", message: "The copy trade didn't go through." }), {
+        politeness: "assertive",
+        dedupeKey: "copy-trade:failed",
+      });
+      focusReturn.restore(confirmButtonRef.current);
     } finally {
       setIsSubmitting(false);
     }
@@ -703,23 +733,20 @@ function CopyTradeContent() {
               {buy.isPending && (
                 <div className="rounded-2xl border border-outline-variant bg-surface p-4 text-sm text-on-surface-variant flex items-center justify-between" role="status">
                   <span>{renderTxPhase(buy.phase) ?? statusMessage ?? "Processing copy trade…"}</span>
-                  {"hash" in buy.phase && buy.phase.hash && (
-                    <a
-                      href={explorerTx(buy.phase.hash)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-primary hover:underline font-data-mono text-xs"
-                    >
-                      View: {buy.phase.hash.slice(0, 8)}…
-                    </a>
-                  )}
+                  {"hash" in buy.phase && buy.phase.hash && <TxLink hash={buy.phase.hash} className="text-primary hover:underline font-data-mono text-xs" />}
                 </div>
               )}
 
               {/* Status message when not pending */}
               {!buy.isPending && statusMessage && (
-                <div className="rounded-2xl border border-outline-variant bg-surface p-4 text-sm text-on-surface-variant">
+                <div ref={resultRef} tabIndex={-1} className="rounded-2xl border border-outline-variant bg-surface p-4 text-sm text-on-surface-variant">
                   {waitingForBuy ? "Waiting for your previous transaction to finish…" : statusMessage}
+                  {statusTxHash && (
+                    <>
+                      {" "}
+                      <TxLink hash={statusTxHash} />
+                    </>
+                  )}
                 </div>
               )}
               <div className="flex gap-3">
@@ -731,6 +758,7 @@ function CopyTradeContent() {
                   Go Back
                 </button>
                 <button
+                  ref={confirmButtonRef}
                   className="flex-[2] bg-[#005f73] text-primary-foreground py-4 rounded-lg font-headline-sm text-headline-sm shadow-lg shadow-primary-container/20 hover:brightness-110 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={handleConfirm}
                   type="button"

@@ -10,6 +10,7 @@ import { InboxProvider } from "@/lib/notifications/InboxProvider";
 import { PwaRegistrar } from "@/components/pwa/pwa-registrar";
 import { DebugMount } from "@/components/debug/debug-mount";
 import { RpcDegradedBanner } from "@/components/debug/RpcPanel";
+import { AnnouncerProvider } from "@/components/ui/announcer";
 
 const geistSans = {
   variable: "--font-geist-sans",
@@ -60,11 +61,13 @@ export default function RootLayout({
             <RealtimeProvider>
               <HealthProvider>
                 <InboxProvider>
-                  <Navbar />
-                  <RpcDegradedBanner />
-                  {children}
-                  <Footer />
-                  <DebugMount />
+                  <AnnouncerProvider>
+                    <Navbar />
+                    <RpcDegradedBanner />
+                    {children}
+                    <Footer />
+                    <DebugMount />
+                  </AnnouncerProvider>
                 </InboxProvider>
               </HealthProvider>
             </RealtimeProvider>
